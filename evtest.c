@@ -93,6 +93,7 @@ enum evtest_mode {
 	MODE_CAPTURE,
 	MODE_QUERY,
 	MODE_VERSION,
+	MODE_WAIT,
 };
 
 static const struct query_mode {
@@ -1172,6 +1173,44 @@ static int print_events(int fd)
 }
 
 /**
+ * Wait for a keycode on a specific device. The query can be of
+ * any known mode, on any valid keycode.
+ *
+ * @param fd The file descriptor to the device.
+ * @param type The event type that is being queried (e.g. key, switch)
+ * @param keycode The code of the key/switch/sound/LED to be queried
+ * @return 0 on success, non-zero on error.
+ */
+static int wait_for_keycode(int fd, int type, int keycode)
+{
+	struct input_event ev[64];
+	int i, rd;
+	fd_set rdfs;
+
+	FD_ZERO(&rdfs);
+	FD_SET(fd, &rdfs);
+
+	while (!stop) {
+		select(fd + 1, &rdfs, NULL, NULL, NULL);
+		rd = read(fd, ev, sizeof(ev));
+
+		if (rd < (int) sizeof(struct input_event)) {
+			printf("expected %d bytes, got %d\n", (int) sizeof(struct input_event), rd);
+			perror("\nevtest: error reading");
+			return 1;
+		}
+
+		for (i = 0; i < rd / sizeof(struct input_event); i++) {
+			if ((type == ev[i].type) && (keycode == ev[i].code))
+				stop = 1;
+		}
+	}
+
+	ioctl(fd, EVIOCGRAB, (void*)0);
+	return EXIT_SUCCESS;
+}
+
+/**
  * Grab and immediately ungrab the device.
  *
  * @param fd The file descriptor to the device.
@@ -1190,13 +1229,13 @@ static int test_grab(int fd, int grab_flag)
 }
 
 /**
- * Enter capture mode. The requested event device will be monitored, and any
- * captured events will be decoded and printed on the console.
+ * Open a device to monitor. The requested event device will be monitored, and
+ * any captured events will be decoded.
  *
  * @param device The device to monitor, or NULL if the user should be prompted.
- * @return 0 on success, non-zero on error.
+ * @return a non-negative integer file descriptor, -1 on error.
  */
-static int do_capture(const char *device, int grab_flag)
+static int open_device(const char *device, int grab_flag)
 {
 	int fd;
 	char *filename = NULL;
@@ -1215,7 +1254,7 @@ static int do_capture(const char *device, int grab_flag)
 		filename = strdup(device);
 
 	if (!filename)
-		return EXIT_FAILURE;
+		return -1;
 
 	if ((fd = open(filename, O_RDONLY)) < 0) {
 		perror("evtest");
@@ -1231,8 +1270,6 @@ static int do_capture(const char *device, int grab_flag)
 
 	if (print_device_info(fd))
 		goto error;
-
-	printf("Testing ... (interrupt to exit)\n");
 
 	if (test_grab(fd, grab_flag))
 	{
@@ -1255,11 +1292,52 @@ static int do_capture(const char *device, int grab_flag)
 
 	free(filename);
 
-	return print_events(fd);
+	return fd;
 
 error:
 	free(filename);
-	return EXIT_FAILURE;
+	return -1;
+}
+
+/**
+ * Enter capture mode. The requested event device will be monitored, and any
+ * captured events will be decoded and printed on the console.
+ *
+ * @param device The device to monitor, or NULL if the user should be prompted.
+ * @return 0 on success, non-zero on error.
+ */
+static int do_capture(const char *device, int grab_flag)
+{
+	int fd;
+
+	fd = open_device(device, grab_flag);
+	if ( fd < 0)
+		return EXIT_FAILURE;
+
+	printf("Testing ... (interrupt to exit)\n");
+
+	return print_events(fd);
+}
+
+/**
+ * Capture events and Wait for a keycode on a specific device.
+ *
+ * @param device The device to monitor, or NULL if the user should be prompted.
+ * @param type The event type that is being queried (e.g. key, switch)
+ * @param keycode The code of the key/switch/sound/LED to be queried
+ * @return 0 on success, non-zero on error.
+ */
+static int do_capture_keycode(const char *device, int grab_flag, int type, int keycode)
+{
+	int fd;
+
+	fd = open_device(device, grab_flag);
+	if ( fd < 0)
+		return EXIT_FAILURE;
+
+	printf("Testing ... (keycode == %i or interrupt to exit)\n", keycode);
+
+	return wait_for_keycode(fd, type, keycode);
 }
 
 /**
@@ -1304,12 +1382,14 @@ static int query_device(const char *device, const struct query_mode *query_mode,
  * @param device The device to query.
  * @param mode The mode (event type) that is to be queried (snd, sw, key, led)
  * @param keycode The key code to query the state of.
+ * @param wait Block until the key code to query changes the state of.
  * @return 0 if the state bit is unset, 10 if the state bit is set.
  */
-static int do_query(const char *device, const char *event_type, const char *keyname)
+static int do_query(const char *device, const char *event_type, const char *keyname, int wait)
 {
 	const struct query_mode *query_mode;
 	int keycode;
+	int ret;
 
 	if (!device) {
 		fprintf(stderr, "Device argument is required for query.\n");
@@ -1331,12 +1411,18 @@ static int do_query(const char *device, const char *event_type, const char *keyn
 		return EXIT_FAILURE;
 	}
 
-	return query_device(device, query_mode, keycode);
+	if (wait)
+		ret = do_capture_keycode(device, 0, query_mode->event_type, keycode);
+	else
+		ret = query_device(device, query_mode, keycode);
+
+	return ret;
 }
 
 static const struct option long_options[] = {
 	{ "grab", no_argument, &grab_flag, 1 },
 	{ "query", no_argument, NULL, MODE_QUERY },
+	{ "wait", no_argument, NULL, MODE_WAIT },
 	{ "version", no_argument, NULL, MODE_VERSION },
 	{ 0, },
 };
@@ -1347,6 +1433,7 @@ int main (int argc, char **argv)
 	const char *keyname;
 	const char *event_type;
 	enum evtest_mode mode = MODE_CAPTURE;
+	int ret;
 
 	progname = argv[0];
 
@@ -1359,6 +1446,9 @@ int main (int argc, char **argv)
 		case 0:
 			break;
 		case MODE_QUERY:
+			mode = c;
+			break;
+		case MODE_WAIT:
 			mode = c;
 			break;
 		case MODE_VERSION:
@@ -1381,7 +1471,13 @@ int main (int argc, char **argv)
 
 	event_type = argv[optind++];
 	keyname = argv[optind++];
-	return do_query(device, event_type, keyname);
+
+	if (mode == MODE_WAIT)
+		ret = do_query(device, event_type, keyname, 1);
+	else
+		ret = do_query(device, event_type, keyname, 0);
+
+	return ret;
 }
 
 /* vim: set noexpandtab tabstop=8 shiftwidth=8: */
