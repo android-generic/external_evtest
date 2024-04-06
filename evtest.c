@@ -792,6 +792,9 @@ static const char * const switches[SW_MAX + 1] = {
 #ifdef SW_PEN_INSERTED
 	NAME_ELEMENT(SW_PEN_INSERTED),
 #endif
+#ifdef SW_MACHINE_COVER
+	NAME_ELEMENT(SW_MACHINE_COVER),
+#endif
 };
 
 static const char * const force[FF_MAX + 1] = {
