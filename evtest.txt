@@ -12,6 +12,8 @@ SYNOPSIS
 
      evtest --query /dev/input/eventX <type> <value>
 
+     evtest --wait /dev/input/eventX <type> <value>
+
 DESCRIPTION
 -----------
 The first invocation type displayed above ("capture mode") causes evtest to
@@ -35,6 +37,12 @@ being queried.
 If the state bit is set (key pressed, switch on, ...), evtest exits with
 code 10. If the state bit is unset (key depressed, switch off, ...), evtest
 exits with code 0. No other output is generated.
+
+In the third invocation type ("wait mode"), evtest performs a one-shot wait
+of the state of a specific key *value* of an event *type*
+
+When the state bit changes (key pressed, switch off, ...), evtests exits with
+code 0.
 
 evtest needs to be able to read from the device; in most cases this means it
 must be run as root.
@@ -63,6 +71,9 @@ evtest returns 1 on error.
 
 When used to query state, evtest returns 0 if the state bit is unset and
 10 if the state bit is set.
+
+When used to wait for keycode, evtest returns 0 if the state bit changed and
+a non-zero value on error.
 
 SEE ALSO
 --------
